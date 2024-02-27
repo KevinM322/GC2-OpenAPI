@@ -33,7 +33,7 @@ SOCKET ConnectToDevice(BLUETOOTH_DEVICE_INFO& deviceInfo) {
     btSocket = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
     if (btSocket == INVALID_SOCKET) {
         std::cout << "Socket creation failed with error: " << WSAGetLastError() << std::endl;
-        WSACleanup();
+        WSACleanup( );
         return INVALID_SOCKET;
     }
 
