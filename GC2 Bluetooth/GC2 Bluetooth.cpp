@@ -25,12 +25,6 @@ std::atomic<bool> keepRunning(true);
 std::string createJsonString(int shotNumber, float speed, float spinAxis, float totalSpin, float backSpin, float sideSpin, float hla, float vla, float carryDistance) {
     std::ostringstream jsonStream;
 
-    // Calculate SpinAxis using arcsin(SideSpin / TotalSpin) in degrees
-    // Make sure to check for division by zero and invalid arcsin arguments
-    if (totalSpin != 0) {
-        spinAxis = std::asin(spinAxis / totalSpin) * (180.0 / M_PI);
-    }
-
     jsonStream << std::fixed << std::setprecision(2); // Set precision for floating-point numbers
     jsonStream << R"({"DeviceID": "GC2", "Units": "Yards", "ShotNumber": )" << shotNumber
         << R"(, "APIversion": "1", "BallData": { "Speed": )" << speed
@@ -283,23 +277,35 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
 
                     int currentTM = ExtractTM(message); // Assume ExtractTM function exists
                     if (currentTM != prevTM && currentTM != -1) {
-                        std::cout << "New event: " << message << std::endl;
-                        outFile << message << std::endl; // Save to file
+                        // For debug
+                        // outFile << message << std::endl; // Save to file
                         
-                        if (detectedFirstShot == TRUE) {
+                        int shotNumber = ExtractValue(message, "ID");
+                        float speed = ExtractValue(message, "SP");
+                        float totalSpin = ExtractValue(message, "TS");
+                        float backSpin = ExtractValue(message, "BS");
+                        float sideSpin = ExtractValue(message, "SS");
+                        float spinAxis = 0;
+                        if (totalSpin != 0) {
+                            spinAxis = std::asin(sideSpin / totalSpin) * 180.0 / M_PI; // Convert to degrees
+                        }
+                        float hla = ExtractValue(message, "AZ");
+                        float vla = ExtractValue(message, "EL");
+                        float carryDistance = ExtractValue(message, "CY");
 
-                            int shotNumber =  ExtractValue(message, "ID");
-                            float speed = ExtractValue(message, "SP");
-                            float totalSpin = ExtractValue(message, "TS");
-                            float backSpin = ExtractValue(message, "BS");
-                            float sideSpin = ExtractValue(message, "SS");
-                            float spinAxis = 0;
-                            if (totalSpin != 0) {
-                                spinAxis = std::asin(sideSpin/totalSpin) * 180.0 / M_PI; // Convert to degrees
-                            }
-                            float hla = ExtractValue(message, "AZ");
-                            float vla = ExtractValue(message, "EL");
-                            float carryDistance = ExtractValue(message, "CY");
+                        if (detectedFirstShot == TRUE) {
+                            // Format data string for file (CSV format)
+                            std::ostringstream fileStream;
+                            fileStream << std::fixed << std::setprecision(2);
+                            fileStream << "Time," << currentTM << ",Speed," << speed << ",Azimuth," << hla << ",Elevation," << vla
+                                << ",\"Total spin\"," << totalSpin << ",\"Spin axis\"," << spinAxis << ",\"Side spin\","
+                                << sideSpin << ",\"Back spin\"," << backSpin << ",Carry," << carryDistance;
+
+                            // Save to file
+                            outFile << fileStream.str() << std::endl;
+                            std::cout << "Shot detected: " << "Time " << currentTM << ", Speed " << speed << ", Azimuth " << hla << ", Elevation " << vla
+                                << ", Total spin " << totalSpin << ", Spin axis " << spinAxis << ", Side spin "
+                                << sideSpin << ", Back spin " << backSpin << ", Carry " << carryDistance << std::endl;
 
                             std::string jsonString = createJsonString(shotNumber, speed, spinAxis, totalSpin, backSpin, sideSpin, hla, vla, carryDistance);
 
@@ -314,12 +320,13 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
 
                                     closesocket(tcpSocket);
                                     tcpSocket = INVALID_SOCKET;
-                                    tcpSocket = ConnectToTCPServer("192.168.1.142", 921);
+                                    tcpSocket = ConnectToTCPServer("127.0.0.1", 921);
                                 }
                             }
                         }
                         else {
-                            std::cout << "Ignoring first shot." << std::endl; 
+                            // Ignoring first shot
+                            std::cout << "Ready." << std::endl;
                             detectedFirstShot = TRUE;
                         }
                         prevTM = currentTM; // Update previous "TM" value
@@ -338,13 +345,14 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
                 memset(buffer, 0, sizeof(buffer));
                 int bytesReceived = recv(tcpSocket, buffer, sizeof(buffer), 0);
                 if (bytesReceived > 0) {
-                    std::cout << "TCP: " << std::string(buffer, bytesReceived) << std::endl;
+                    // Ignore output from TCP connection
+                    // std::cout << "TCP: " << std::string(buffer, bytesReceived) << std::endl;
                 }
                 else if (bytesReceived <= 0) {
                     std::cerr << "TCP connection lost or error occurred. Retrying..." << std::endl;
                     closesocket(tcpSocket);
                     tcpSocket = INVALID_SOCKET;
-                    tcpSocket = ConnectToTCPServer("192.168.1.142", 921);
+                    tcpSocket = ConnectToTCPServer("127.0.0.1", 921);
                 }
             }
         } else if (result == 0) {
@@ -360,7 +368,7 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
 
 int main() {
     SOCKET bluetoothSocket = ConnectToBluetoothDevice();
-    SOCKET tcpSocket = ConnectToTCPServer("192.168.1.142", 921);
+    SOCKET tcpSocket = ConnectToTCPServer("127.0.0.1", 921);
 
     if (bluetoothSocket != INVALID_SOCKET && tcpSocket != INVALID_SOCKET) {
         std::thread forwardThread(MonitorAndForward, bluetoothSocket, tcpSocket);
