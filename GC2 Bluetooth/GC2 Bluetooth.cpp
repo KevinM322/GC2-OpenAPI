@@ -364,7 +364,7 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
 
 int main() {
     std::cout << "Press 'q' to quit." << std::endl
-        << "Press 'i' to enter alternate IP address." << std::endl
+        << "Press 'i' to enter alternate IP address. The IP address should be the computer that is running GS Pro. The default IP address is the local computer (127.0.0.1)." << std::endl
         << "Press '+' / '-' to select a club. The club will be saved in the shots.dat file but is not sent to the simulator software." << std::endl
         << "(Due to a bug in how the program processes input, try holding down the button to provide input. For example, hold down 'i' until the prompt to change IP address comes up.)" << std::endl
         << "To use with GS Pro, connect using Open API. The order of when you open everything should not matter." << std::endl;
