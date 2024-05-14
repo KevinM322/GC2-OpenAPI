@@ -3,6 +3,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <ws2bth.h>
+#include <chrono>
 #include <bluetoothapis.h>
 #include <iostream>
 #include <thread>
@@ -11,6 +12,8 @@
 #include <ws2tcpip.h>
 #include <sys/types.h>
 #include <iomanip>
+#include <map>
+#include <limits>
 #include <cmath> // For std::asin and std::sin
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -97,7 +100,7 @@ SOCKET ConnectToBluetoothDevice() {
         bool deviceConnected = false;
 
         do {
-            if (wcsstr(deviceInfo.szName, L"GC2")) {
+            if (wcsstr(deviceInfo.szName, L"Foresight_GC2")) {
                 std::wcout << L"Found device: " << deviceInfo.szName << std::endl;
 
                 WSADATA wsaData;
@@ -144,94 +147,51 @@ SOCKET ConnectToBluetoothDevice() {
         }
         else {
             std::cout << "Retrying Bluetooth connection..." << std::endl;
+            return INVALID_SOCKET;
         }
     }
     return INVALID_SOCKET;
-}
-
-void ListenForMessages(SOCKET connectedSocket) {
-    const int bufferSize = 1024;
-    char buffer[bufferSize];
-    int bytesReceived;
-
-    // Check if the socket is valid
-    if (connectedSocket == INVALID_SOCKET) {
-        std::cout << "Invalid socket. Cannot listen for messages." << std::endl;
-        return;
-    }
-
-    std::cout << "Listening for messages..." << std::endl;
-
-    while (true) {
-        // Clear the buffer
-        memset(buffer, 0, bufferSize);
-
-        // Receive data from the device
-        bytesReceived = recv(connectedSocket, buffer, bufferSize, 0);
-
-        if (bytesReceived > 0) {
-            // Successfully received data
-            std::cout << "Received message: " << std::string(buffer, 0, bytesReceived) << std::endl;
-        }
-        else if (bytesReceived == 0) {
-            // Connection is closed
-            std::cout << "Connection closed." << std::endl;
-            break;
-        }
-        else {
-            // Error occurred
-            std::cout << "recv failed with error: " << WSAGetLastError() << std::endl;
-            break;
-        }
-    }
-
-    // Cleanup
-    closesocket(connectedSocket);
-    WSACleanup();
 }
 
 SOCKET ConnectToTCPServer(const std::string& ipAddress, int port) {
-    while (keepRunning) {
-        WSADATA wsaData;
-        SOCKET tcpSocket = INVALID_SOCKET;
-        struct sockaddr_in serverAddr;
+    WSADATA wsaData;
+    SOCKET tcpSocket = INVALID_SOCKET;
+    struct sockaddr_in serverAddr;
 
-        // Initialize Winsock
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            std::cerr << "WSAStartup failed" << std::endl;
-            continue;
-        }
-
-        tcpSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (tcpSocket == INVALID_SOCKET) {
-            std::cerr << "Error creating TCP socket." << std::endl;
-            WSACleanup();
-            continue;
-        }
-
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(port);
-
-        // Use inet_pton instead of inet_addr
-        if (inet_pton(AF_INET, ipAddress.c_str(), &serverAddr.sin_addr) <= 0) {
-            std::cerr << "Invalid address/ Address not supported." << std::endl;
-            closesocket(tcpSocket);
-            WSACleanup();
-            continue;
-        }
-
-        if (connect(tcpSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-            std::cerr << "TCP Connection Failed." << std::endl;
-            closesocket(tcpSocket);
-            WSACleanup();
-            continue;
-        }
-
-        std::cout << "Connected to Open API." << std::endl;
-
-        return tcpSocket;
+    // Initialize Winsock
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed" << std::endl;
+        return INVALID_SOCKET;
     }
-    return INVALID_SOCKET;
+
+    tcpSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (tcpSocket == INVALID_SOCKET) {
+        std::cerr << "Error creating TCP socket." << std::endl;
+        WSACleanup();
+        return INVALID_SOCKET;
+    }
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+
+    // Use inet_pton instead of inet_addr
+    if (inet_pton(AF_INET, ipAddress.c_str(), &serverAddr.sin_addr) <= 0) {
+        std::cerr << "Invalid address / Address not supported." << std::endl;
+        closesocket(tcpSocket);
+        WSACleanup();
+        return INVALID_SOCKET;
+    }
+
+    if (connect(tcpSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        std::cerr << "TCP Connection Failed." << std::endl;
+        closesocket(tcpSocket);
+        WSACleanup();
+        return INVALID_SOCKET;
+    }
+
+    std::cout << "Connected to Open API." << std::endl;
+
+    return tcpSocket;
 }
 
 
@@ -249,6 +209,11 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
     fd_set readfds;
     int result;
     struct timeval tv;
+    bool firstTCPError = TRUE;
+
+    std::string targetIP;
+
+    targetIP = "127.0.0.1";
 
     std::ofstream outFile("shots.dat", std::ios::app); // Open file for appending
 
@@ -293,34 +258,46 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
                         float vla = ExtractValue(message, "EL");
                         float carryDistance = ExtractValue(message, "CY");
 
+                        auto now = std::chrono::system_clock::now();
+                        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+                        std::tm now_tm;
+                        localtime_s(&now_tm,&now_c);
+
                         if (detectedFirstShot == TRUE) {
-                            // Format data string for file (CSV format)
-                            std::ostringstream fileStream;
-                            fileStream << std::fixed << std::setprecision(2);
-                            fileStream << "Time," << currentTM << ",Speed," << speed << ",Azimuth," << hla << ",Elevation," << vla
-                                << ",\"Total spin\"," << totalSpin << ",\"Spin axis\"," << spinAxis << ",\"Side spin\","
-                                << sideSpin << ",\"Back spin\"," << backSpin << ",Carry," << carryDistance;
-
-                            // Save to file
-                            outFile << fileStream.str() << std::endl;
-                            std::cout << "Shot detected: " << "Time " << currentTM << ", Speed " << speed << ", Azimuth " << hla << ", Elevation " << vla
-                                << ", Total spin " << totalSpin << ", Spin axis " << spinAxis << ", Side spin "
-                                << sideSpin << ", Back spin " << backSpin << ", Carry " << carryDistance << std::endl;
-
+                            
                             std::string jsonString = createJsonString(shotNumber, speed, spinAxis, totalSpin, backSpin, sideSpin, hla, vla, carryDistance);
 
                             if (speed == 0) {
                                 std::cout << "Speed detected as zero. Ignoring misread. " << std::endl;
                             }
                             else {
-                                std::cout << "Sending: " << jsonString << std::endl;
+                                // Format data string for file (CSV format)
+                                std::ostringstream fileStream;
+                                fileStream << std::put_time(&now_tm, "Date,%Y-%m-%d,Time,\"%I:%M:%S %p\","); // Date and Time
+                                fileStream << std::fixed << std::setprecision(2);
+                                fileStream << "Timestamp," << currentTM << ",Speed," << speed << ",Azimuth," << hla << ",Elevation," << vla
+                                    << ",\"Total spin\"," << totalSpin << ",\"Spin axis\"," << spinAxis << ",\"Side spin\","
+                                    << sideSpin << ",\"Back spin\"," << backSpin << ",Carry," << carryDistance;
 
+                                // Save to file
+                                outFile << fileStream.str() << std::endl;
+                                std::cout << "Shot detected: " << "Time " << currentTM << ", Speed " << speed << ", Azimuth " << hla << ", Elevation " << vla
+                                    << ", Total spin " << totalSpin << ", Spin axis " << spinAxis << ", Side spin "
+                                    << sideSpin << ", Back spin " << backSpin << ", Carry " << carryDistance << std::endl;
+
+                                // Send to TCP socket
                                 if (send(tcpSocket, jsonString.c_str(), jsonString.length(), 0) == SOCKET_ERROR) {
-                                    std::cerr << "Failed to send data over TCP. Error: " << WSAGetLastError() << std::endl;
+                                    if (firstTCPError == TRUE) {
+                                        std::cerr << "Failed to send data over TCP. Error: " << WSAGetLastError() << ". Retrying." << std::endl;
+                                        firstTCPError = FALSE;
+                                    }
 
                                     closesocket(tcpSocket);
                                     tcpSocket = INVALID_SOCKET;
-                                    tcpSocket = ConnectToTCPServer("127.0.0.1", 921);
+                                    tcpSocket = ConnectToTCPServer(targetIP, 921);
+                                }
+                                else {
+                                    firstTCPError = TRUE;
                                 }
                             }
                         }
@@ -352,7 +329,7 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
                     std::cerr << "TCP connection lost or error occurred. Retrying..." << std::endl;
                     closesocket(tcpSocket);
                     tcpSocket = INVALID_SOCKET;
-                    tcpSocket = ConnectToTCPServer("127.0.0.1", 921);
+                    tcpSocket = ConnectToTCPServer(targetIP, 921);
                 }
             }
         } else if (result == 0) {
@@ -360,24 +337,43 @@ void MonitorAndForward(SOCKET bluetoothSocket, SOCKET tcpSocket) {
         }
         else {
             // Select error
-            std::cerr << "Select call failed with error: " << WSAGetLastError() << std::endl;
+            if (bluetoothSocket != INVALID_SOCKET) {
+                std::cerr << "Select call failed with error: " << WSAGetLastError() << std::endl;
+                closesocket(bluetoothSocket);
+                bluetoothSocket = INVALID_SOCKET;
+            }
+                
+            bluetoothSocket = ConnectToBluetoothDevice();
+        }
+
+        if (GetAsyncKeyState('q') & 0x8000 || GetAsyncKeyState('Q') & 0x8000) {
+            keepRunning = FALSE;
+        }
+
+        if (GetAsyncKeyState('i') & 0x8000 || GetAsyncKeyState('I') & 0x8000) {
+            std::cout << "Enter target IP address. Default is 127.0.0.1. ";
+            
+            std::getline(std::cin, targetIP);
+            closesocket(tcpSocket);
+            tcpSocket = INVALID_SOCKET;
+            tcpSocket = ConnectToTCPServer(targetIP, 921);
         }
     }
 }
 
 
 int main() {
+    std::cout << "Press 'q' to quit." << std::endl
+        << "Press 'i' to enter alternate IP address." << std::endl
+        << "Press '+' / '-' to select a club. The club will be saved in the shots.dat file but is not sent to the simulator software." << std::endl
+        << "(Due to a bug in how the program processes input, try holding down the button to provide input. For example, hold down 'i' until the prompt to change IP address comes up.)" << std::endl
+        << "To use with GS Pro, connect using Open API. The order of when you open everything should not matter." << std::endl;
     SOCKET bluetoothSocket = ConnectToBluetoothDevice();
     SOCKET tcpSocket = ConnectToTCPServer("127.0.0.1", 921);
 
-    if (bluetoothSocket != INVALID_SOCKET && tcpSocket != INVALID_SOCKET) {
-        std::thread forwardThread(MonitorAndForward, bluetoothSocket, tcpSocket);
-        forwardThread.join();
-    }
-    else {
-        std::cerr << "Failed to establish Bluetooth or TCP connection." << std::endl;
-    }
-
+    std::thread forwardThread(MonitorAndForward, bluetoothSocket, tcpSocket);
+    forwardThread.join();
+    
     // Cleanup
     if (bluetoothSocket != INVALID_SOCKET) closesocket(bluetoothSocket);
     if (tcpSocket != INVALID_SOCKET) closesocket(tcpSocket);
